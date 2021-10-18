@@ -1,0 +1,195 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>LUTs demo</title>
+        <style>
+			body { margin: 0 }
+		</style>
+    </head>
+    <body>
+        <script type="module">
+            import * as THREE from 'https://cdn.skypack.dev/three@0.133.1';
+            import { OrbitControls } from 'https://cdn.skypack.dev/three@0.133.1/examples/jsm/controls/OrbitControls.js';
+          
+            const SIZE  = 256;
+            const RED   = 0;
+            const GREEN = 1;
+            const BLUE  = 2;
+            const ALPHA = 3;
+
+            const HI_RES = 256;
+            const LOW_RES = 16;
+
+            init({
+                resolution: LOW_RES,
+                variant: 'LUT', // cube | maskedCube, 3dLUT, LUT
+                showCoords: true,
+            });
+
+            function init({ resolution, variant, showCoords }) {
+                // Setup
+                const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 4000);
+
+                const renderer = new THREE.WebGLRenderer();
+                renderer.setSize( window.innerWidth, window.innerHeight );
+                document.body.appendChild( renderer.domElement );
+
+                const controls = new OrbitControls(camera, renderer.domElement);
+                camera.position.set(0, 0, SIZE * 2);
+                controls.update();
+
+                // Scene
+                const scene = new THREE.Scene();
+                
+                switch (variant) {
+                    case 'cube':
+                    case 'maskedCube': {
+                        const mask = variant === 'maskedCube';
+                        const cube = createCube(resolution, mask);
+                        scene.add(cube);
+                        break;
+                    }
+                    case 'LUT':
+                    case '3dLUT': {
+                        const in3d = variant === '3dLUT';
+                        const layers = createLUT(in3d);
+                        layers.forEach(layer => scene.add(layer));
+                        break;
+                    }
+
+                }
+
+                if (showCoords && variant !== 'LUT')
+                    for (let x = 0; x <= 1; x++)
+                        for (let y = 0; y <= 1; y++)
+                            for (let z = 0; z <= 1; z++)
+                                scene.add(getCoordsSprite(x * 255, y * 255, z * 255));
+
+                const animate = () => {
+                    requestAnimationFrame(animate);
+                    renderer.render(scene, camera);
+                };
+                animate();
+            }
+
+            // only works in LOW_RES
+            function createLUT(in3d) {
+                const layers = new Array();
+                const resolution = LOW_RES;
+                const sqrtRes = Math.sqrt(resolution);
+                const step = SIZE / resolution;
+                const getColorSpectrumMaterial = createGetColorSpectrumMaterial(resolution, false);
+                for (let z = 0; z < resolution; z++) {
+                    const geometry = new THREE.PlaneGeometry(SIZE, SIZE);
+                    const material = getColorSpectrumMaterial(0, RED, GREEN, BLUE, z * step);
+                    const layer = new THREE.Mesh(geometry, material);
+                    if (in3d) {
+                        layer.position.z = z * step - SIZE / 2;
+                    } else {
+                        layer.position.x = (z % sqrtRes) * SIZE - SIZE * sqrtRes / 2;
+                        layer.position.y = -Math.floor(z / sqrtRes) * SIZE;
+                    }
+                    layers.push(layer);
+                }
+                return layers;
+            }
+
+            function createCube(resolution, mask) {
+                const geometry = new THREE.BoxGeometry(SIZE, SIZE, SIZE);
+                const getColorSpectrumMaterial = createGetColorSpectrumMaterial(resolution, mask);
+                const materials = [
+                    getColorSpectrumMaterial(180, BLUE, GREEN, RED),
+                    getColorSpectrumMaterial(270, GREEN, BLUE),
+                    getColorSpectrumMaterial(0, RED, BLUE, GREEN),
+                    getColorSpectrumMaterial(270, BLUE, RED),
+                    getColorSpectrumMaterial(270, GREEN, RED, BLUE),
+                    getColorSpectrumMaterial(180, RED, GREEN),
+                ];
+                geometry.groups.forEach(function (face, i) {
+                    face.materialIndex = Math.floor(i % materials.length);
+                });
+                return new THREE.Mesh(geometry, materials);
+            }
+
+            function createGetColorSpectrumMaterial(resolution, mask) {
+                return (rotation, color1, color2, color3, layer) => {
+                    const map = new THREE.CanvasTexture(getColorSpectrumCanvas(resolution, mask, rotation, color1, color2, color3, layer));
+                    return new THREE.MeshBasicMaterial({ map, transparent: true, side: THREE.DoubleSide });
+                }
+            }
+
+            function getColorSpectrumCanvas(resolution, mask, rotation, color1, color2, color3, layer) {
+                const ctx = getCanvasCtx(SIZE, SIZE);
+                const image = ctx.createImageData(SIZE, SIZE);
+                const data = image.data;
+
+                const step = SIZE / resolution;
+                const _layer = layer !== undefined ? layer : 255;
+                const value = (x, y, color) => {
+                    const val = (color1 === color) * x + (color2 === color) * y + (color3 === color) * _layer;
+                    return Math.floor(val / step) * step;
+                };
+
+                for (let y = 0; y < SIZE; y++) {
+                    const _y = y * SIZE;
+                    for (let x = 0; x < SIZE; x++) {
+                        const i = (x + _y) * 4;
+                        data[i + RED]   = value(x, y, RED);
+                        data[i + GREEN] = value(x, y, GREEN);
+                        data[i + BLUE]  = value(x, y, BLUE);
+                        data[i + ALPHA] = 255;
+                    }
+                }
+                ctx.putImageData(image, 0, 0);
+                if (mask) {
+                    ctx.clearRect(step, step, SIZE - step * 2, SIZE - step * 2);
+                }
+
+                if (!rotation) {
+                    return ctx.canvas;
+                }
+
+                const translateX = rotation === 90 || rotation === 180 ? SIZE : 0;
+                const translateY = rotation === 180 || rotation === 270 ? SIZE : 0;
+                const rCtx = getCanvasCtx(SIZE, SIZE);
+                rCtx.translate(translateX, translateY);
+                rCtx.rotate(rotation * Math.PI / 180);
+                rCtx.drawImage(ctx.canvas, 0, 0);
+
+                return rCtx.canvas;
+            }
+
+            function getCoordsSprite(x, y, z) {
+                const width = 128;
+                const height = 32;
+                const canvas = getCoordsCanvas(x, y, z, width, height);
+                const map = new THREE.CanvasTexture(canvas);
+                const material = new THREE.SpriteMaterial({ map });
+                const sprite = new THREE.Sprite(material);
+                const getCoord = (a) => a === 0 ? a - SIZE / 2 - 10 : a - SIZE / 2 + 10;
+                sprite.position.set(getCoord(x), getCoord(y), getCoord(z));
+				sprite.scale.x = width;
+				sprite.scale.y = height;
+                return sprite;
+            }
+
+            function getCoordsCanvas(x, y, z, width, height) {
+                const ctx = getCanvasCtx(width, height);
+                const text = `(${x}, ${y}, ${z})`;//`R: ${x}, G: ${y}, B: ${z}`;
+                ctx.strokeStyle = '#000000';
+                ctx.lineWidth = 2;
+                ctx.strokeText(text, 4, height / 2);
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillText(text, 4, height / 2);
+                return ctx.canvas;
+            }
+
+            function getCanvasCtx(width, height) {
+                const canvas = document.createElement('canvas')
+                canvas.width = width;
+                canvas.height = height;
+                return canvas.getContext('2d');
+            }
+          </script>
+    </body>
+</html>
